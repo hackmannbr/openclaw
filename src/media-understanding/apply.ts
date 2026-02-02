@@ -82,6 +82,30 @@ const XML_ESCAPE_MAP: Record<string, string> = {
   "'": "&apos;",
 };
 
+function hasMagic(buffer, ascii) {
+  if (!buffer || buffer.length < ascii.length) return false;
+  for (let i = 0; i < ascii.length; i += 1) {
+    if (buffer[i] !== ascii.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+function isKnownBinaryMedia(buffer) {
+  // Telegram voice notes are OGG/Opus in an OGG container.
+  if (hasMagic(buffer, "OggS")) return true;
+
+  // Defense-in-depth for other common binary formats.
+  if (hasMagic(buffer, "RIFF")) return true; // WAV/AVI
+  if (hasMagic(buffer, "ID3")) return true;  // MP3 tag header
+  if (buffer?.length >= 2 && buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0) return true; // MP3 frame sync
+
+  // Images/PDF sometimes get mis-sniffed too (optional but safe)
+  if (buffer?.length >= 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return true; // PNG
+  if (buffer?.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return true; // JPEG
+  if (buffer?.length >= 4 && buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return true; // PDF
+
+  return false;
+}
 /**
  * Escapes special XML characters in attribute values to prevent injection.
  */
@@ -139,6 +163,9 @@ function appendFileBlocks(body: string | undefined, blocks: string[]): string {
 function resolveUtf16Charset(buffer?: Buffer): "utf-16le" | "utf-16be" | undefined {
   if (!buffer || buffer.length < 2) {
     return undefined;
+  }
+  if (isKnownBinaryMedia(buffer)) {
+      return undefined;
   }
   const b0 = buffer[0];
   const b1 = buffer[1];
@@ -358,6 +385,10 @@ async function extractFileBlocks(params: {
         logVerbose(`media: file attachment skipped (buffer): ${String(err)}`);
       }
       continue;
+    }
+    const buf = bufferResult?.buffer;
+    if (isKnownBinaryMedia(buf)) {
+        continue;
     }
     const nameHint = bufferResult?.fileName ?? attachment.path ?? attachment.url;
     const forcedTextMimeResolved = forcedTextMime ?? resolveTextMimeFromName(nameHint ?? "");
